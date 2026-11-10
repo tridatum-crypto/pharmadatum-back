@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+duckdb
+pandas
+pydantic
+passlib
+bcrypt
+python-multipart
+gdown
