@@ -33,18 +33,19 @@ DEFAULT_DB_PATH = os.path.join(BASE_DIR, "pharmadatum.duckdb")
 DB_PATH = os.getenv("DUCKDB_PATH", DEFAULT_DB_PATH)
 
 # Descarga automática si no existe localmente o si es un archivo vacío (para Render/Nube)
-# Descarga automática si no existe localmente o si es un archivo vacío (para Render/Nube)
 DRIVE_FILE_ID = os.getenv("DRIVE_FILE_ID", "1fMvvLNspMlSoi_InipPIMLm8GFuycAGF")
+
+# Validar si el archivo no existe O si existe pero pesa menos de 1 MB (DuckDB genera un archivo de ~12KB si no lo encuentra)
 db_needs_download = not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) < 1000000
 
 if db_needs_download:
-    print(f"--> [Iniciando descarga de base de datos desde Google Drive ID: {DRIVE_FILE_ID} a {DB_PATH}...]")
+    print(f"--> [Iniciando descarga de base de datos desde Google Drive a {DB_PATH}...]")
+    url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
     try:
-        # Usar id directo, que es más estable en gdown para archivos grandes
-        gdown.download(id=DRIVE_FILE_ID, output=DB_PATH, quiet=False)
+        gdown.download(url, DB_PATH, quiet=False)
         print("--> [Descarga completada exitosamente]")
     except Exception as e:
-        print(f"--> [ERROR CRÍTICO AL DESCARGAR LA BASE DE DATOS]: {e}")
+        print(f"--> [Error al descargar la base de datos]: {e}")
 
 # 1. Crear tabla de usuarios si no existe
 def init_users_db():
