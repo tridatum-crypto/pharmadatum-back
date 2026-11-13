@@ -15,7 +15,11 @@ app = FastAPI(title="PharmaDatum API")
 # --- CONFIGURACIÓN DE CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://pharmadatum-front.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -28,14 +32,20 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB_PATH = os.path.join(BASE_DIR, "pharmadatum.duckdb")
 DB_PATH = os.getenv("DUCKDB_PATH", DEFAULT_DB_PATH)
 
-# Descarga automática si no existe localmente (para Render/Nube)
+# Descarga automática si no existe localmente o si es un archivo vacío (para Render/Nube)
 DRIVE_FILE_ID = os.getenv("DRIVE_FILE_ID", "1fMvvLNspMlSoi_InipPIMLm8GFuycAGF")
 
-if not os.path.exists(DB_PATH) and DRIVE_FILE_ID != "1fMvvLNspMlSoi_InipPIMLm8GFuycAGF":
-    print(f"--> [Iniciando descarga de base de datos desde la nube ({DB_PATH})...]")
+# Validar si el archivo no existe O si existe pero pesa menos de 1 MB (DuckDB genera un archivo de ~12KB si no lo encuentra)
+db_needs_download = not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) < 1000000
+
+if db_needs_download:
+    print(f"--> [Iniciando descarga de base de datos desde Google Drive a {DB_PATH}...]")
     url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
-    gdown.download(url, DB_PATH, quiet=False)
-    print("--> [Descarga completada exitosamente]")
+    try:
+        gdown.download(url, DB_PATH, quiet=False)
+        print("--> [Descarga completada exitosamente]")
+    except Exception as e:
+        print(f"--> [Error al descargar la base de datos]: {e}")
 
 # 1. Crear tabla de usuarios si no existe
 def init_users_db():
