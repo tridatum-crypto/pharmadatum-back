@@ -3,7 +3,7 @@ import re
 import uuid
 import duckdb
 from typing import Optional
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -11,6 +11,8 @@ from passlib.context import CryptContext
 import gdown
 
 app = FastAPI(title="PharmaDatum API")
+ip_download_history = {}
+MAX_DOWNLOADS_PER_MINUTE = 5
 
 # --- CONFIGURACIÓN DE CORS ---
 app.add_middleware(
@@ -46,6 +48,37 @@ if db_needs_download:
         print("--> [Descarga completada exitosamente]")
     except Exception as e:
         print(f"--> [Error al descargar la base de datos]: {e}")
+        
+        
+def verificar_limite_descargas(request: Request):
+    """Limita las descargas a 5 por minuto por cada dirección IP."""
+    # Obtener la IP real del usuario (considerando el proxy de Render)
+    forwarded = request.headers.get("X-Forwarded-For")
+    client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    
+    ahora = time.time()
+    historial = ip_download_history.get(client_ip, [])
+    
+    # Mantener solo las descargas realizadas en los últimos 60 segundos
+    historial_reciente = [t for t in historial if ahora - t < 60]
+    
+    if len(historial_reciente) >= MAX_DOWNLOADS_PER_MINUTE:
+        raise HTTPException(
+            status_code=429, 
+            detail="Has alcanzado el límite de 5 descargas por minuto. Por favor espera unos segundos."
+        )
+    
+    historial_reciente.append(ahora)
+    ip_download_history[client_ip] = historial_reciente
+    return client_ip
+
+def eliminar_archivo_temporal(path: str):
+    """Limpia el disco duro borrando el CSV temporal tras enviarlo."""
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception as e:
+            print(f"Error al eliminar archivo temporal {path}: {e}")
 
 # 1. Crear tabla de usuarios si no existe
 def init_users_db():
@@ -383,7 +416,7 @@ def buscar_invima(
 
 # DENTRO DE main.py
 
-@app.get("/api/sismed/exportar")
+@app.get("/api/sismed/exportar", dependencies=[Depends(verificar_limite_descargas)])
 def exportar_sismed(
     query: Optional[str] = Query(None), 
     param: Optional[str] = Query('EXPEDIENTE'),
@@ -397,8 +430,10 @@ def exportar_sismed(
         )
 
     con = None
+    df = None
     try:
         con = duckdb.connect(DB_PATH, read_only=True)
+        con.execute("SET memory_limit='350MB';")
 
         where_conditions = []
         params = []
@@ -448,9 +483,12 @@ def exportar_sismed(
     finally:
         if con:
             con.close()
+        if df is not None:
+            del df
+        gc.collect()
 
 
-@app.get("/api/invima/exportar")
+@app.get("/api/invima/exportar", dependencies=[Depends(verificar_limite_descargas)])
 def exportar_invima(
     query: Optional[str] = Query(None),
     param: Optional[str] = Query('EXPEDIENTE')
@@ -463,8 +501,10 @@ def exportar_invima(
         )
 
     con = None
+    df = None
     try:
         con = duckdb.connect(DB_PATH, read_only=True)
+        con.execute("SET memory_limit='350MB';")
 
         where_conditions = []
         params = []
@@ -500,3 +540,6 @@ def exportar_invima(
     finally:
         if con:
             con.close()
+        if df is not None:
+            del df
+        gc.collect()
