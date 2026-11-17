@@ -10,6 +10,9 @@ from pydantic import BaseModel
 from passlib.context import CryptContext
 import gdown
 import gc
+import io
+import csv
+import time
 
 app = FastAPI(title="PharmaDatum API")
 ip_download_history = {}
@@ -72,6 +75,45 @@ def verificar_limite_descargas(request: Request):
     historial_reciente.append(ahora)
     ip_download_history[client_ip] = historial_reciente
     return client_ip
+
+def generar_csv_por_lotes(con, sql_query: str, params: list, limpiar_reg_sanitario: bool = False):
+    try:
+        yield '\uFEFF'
+        cursor = con.execute(sql_query, params)
+        columnas = [desc[0] for desc in cursor.description]
+        
+        idx_reg = -1
+        if limpiar_reg_sanitario:
+            for i, col in enumerate(columnas):
+                if col.lower() == 'registrosanitario':
+                    idx_reg = i
+                    break
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        
+        writer.writerow(columnas)
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate(0)
+
+        while True:
+            filas = cursor.fetchmany(2000)
+            if not filas:
+                break
+            for fila in filas:
+                fila_limpia = ['' if val is None else val for val in fila]
+                if idx_reg != -1 and str(fila_limpia[idx_reg]).strip() == '':
+                    fila_limpia[idx_reg] = '0'
+                writer.writerow(fila_limpia)
+            
+            yield buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate(0)
+    finally:
+        if con:
+            con.close()
+        gc.collect()
 
 def eliminar_archivo_temporal(path: str):
     """Limpia el disco duro borrando el CSV temporal tras enviarlo."""
@@ -423,7 +465,6 @@ def exportar_sismed(
     param: Optional[str] = Query('EXPEDIENTE'),
     anio: Optional[str] = Query(None)
 ):
-    # Bloqueo de seguridad: No permitir descarga sin búsqueda previa
     if not query or not query.strip():
         raise HTTPException(
             status_code=400, 
@@ -431,15 +472,12 @@ def exportar_sismed(
         )
 
     con = None
-    df = None
     try:
         con = duckdb.connect(DB_PATH, read_only=True)
-        con.execute("SET memory_limit='350MB';")
 
         where_conditions = []
         params = []
 
-        # 1. Filtro por Año
         if (
             anio and 
             str(anio).strip() and 
@@ -448,7 +486,6 @@ def exportar_sismed(
             where_conditions.append("CAST(\"AnnioCorte\" AS VARCHAR) ILIKE ?")
             params.append(f"%{str(anio).strip()}%")
 
-        # 2. Filtro obligatorio por consulta y parámetro
         clean_query = query.strip().lower()
         config = get_column_config(param)
         col_name = config["sismed"]
@@ -462,31 +499,22 @@ def exportar_sismed(
             params.append(f"%{clean_query}%")
 
         where_clause = f" WHERE {' AND '.join(where_conditions)}"
+        sql_query = f"SELECT * FROM precios_sismed{where_clause}"
 
-        df = con.execute(f"SELECT * FROM precios_sismed{where_clause}", params).df()
-        
-        if 'registrosanitario' in df.columns:
-            df['registrosanitario'] = df['registrosanitario'].fillna('0').replace('', '0')
-            
-        df = df.fillna('')
-
-        csv_data = '\uFEFF' + df.to_csv(index=False)
-        return Response(
-            content=csv_data,
+        return StreamingResponse(
+            generar_csv_por_lotes(con, sql_query, params, limpiar_reg_sanitario=True),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=Reporte_SISMED_Filtrado.csv"}
         )
     except HTTPException:
-        raise
-    except Exception as e:
-        print("Error en exportar_sismed:", e)
-        return Response(content="Error generando el reporte", status_code=500)
-    finally:
         if con:
             con.close()
-        if df is not None:
-            del df
-        gc.collect()
+        raise
+    except Exception as e:
+        if con:
+            con.close()
+        print("Error en exportar_sismed:", repr(e))
+        raise HTTPException(status_code=500, detail=f"Error generando el reporte: {str(e)}")
 
 
 @app.get("/api/invima/exportar", dependencies=[Depends(verificar_limite_descargas)])
@@ -494,7 +522,6 @@ def exportar_invima(
     query: Optional[str] = Query(None),
     param: Optional[str] = Query('EXPEDIENTE')
 ):
-    # Bloqueo de seguridad: No permitir descarga sin búsqueda previa
     if not query or not query.strip():
         raise HTTPException(
             status_code=400, 
@@ -502,10 +529,8 @@ def exportar_invima(
         )
 
     con = None
-    df = None
     try:
         con = duckdb.connect(DB_PATH, read_only=True)
-        con.execute("SET memory_limit='350MB';")
 
         where_conditions = []
         params = []
@@ -523,24 +548,19 @@ def exportar_invima(
             params.append(f"%{clean_query}%")
 
         where_clause = f" WHERE {' AND '.join(where_conditions)}"
+        sql_query = f"SELECT * FROM registros_invima{where_clause}"
 
-        df = con.execute(f"SELECT * FROM registros_invima{where_clause}", params).df()
-        df = df.fillna('')
-
-        csv_data = '\uFEFF' + df.to_csv(index=False)
-        return Response(
-            content=csv_data,
+        return StreamingResponse(
+            generar_csv_por_lotes(con, sql_query, params, limpiar_reg_sanitario=False),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=Reporte_INVIMA_Filtrado.csv"}
         )
     except HTTPException:
-        raise
-    except Exception as e:
-        print("Error en exportar_invima:", e)
-        return Response(content="Error generando el reporte", status_code=500)
-    finally:
         if con:
             con.close()
-        if df is not None:
-            del df
-        gc.collect()
+        raise
+    except Exception as e:
+        if con:
+            con.close()
+        print("Error en exportar_invima:", repr(e))
+        raise HTTPException(status_code=500, detail=f"Error generando el reporte: {str(e)}")
