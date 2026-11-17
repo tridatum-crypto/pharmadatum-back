@@ -5,7 +5,7 @@ import duckdb
 from typing import Optional
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from passlib.context import CryptContext
 import gdown
