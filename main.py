@@ -9,6 +9,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from passlib.context import CryptContext
 import gdown
+import gc
 
 app = FastAPI(title="PharmaDatum API")
 ip_download_history = {}
